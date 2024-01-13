@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "parser.h"
 
@@ -52,30 +53,18 @@ const char *get_mime_type(const char *file_ext) {
         return "image/jpeg";
     } else if (strcasecmp(file_ext, "png") == 0) {
         return "image/png";
+    } else if (strcasecmp(file_ext, "json") == 0) {
+        return "application/json";
     } else {
         return "application/octet-stream";
     }
 }
 
-void build_http_response(const char *file_name,
-    const char *file_ext, char *response, size_t *response_len) {
-    const char *mime_type = get_mime_type(file_ext);
-    char *header = (char *)malloc(BUFFER_SIZE * sizeof(char));
-    snprintf(header, BUFFER_SIZE,
-             "HTTP/1.1 200 OK\r\n"
-             "Content-Type: %s\r\n"
-             "\r\n",
-             mime_type);
-
+int read_file_contents(const char *file_name,
+        char *response, size_t *response_len, char *header) {
     int file_fd = open(file_name, O_RDONLY);
     if (file_fd == -1) {
-        snprintf(response, BUFFER_SIZE,
-                 "HTTP/1.1 404 Not Found\r\n"
-                 "Content-Type: text/plain\r\n"
-                 "\r\n"
-                 "404 Not Found");
-        *response_len = strlen(response);
-        return;
+        return -1;
     }
 
     struct stat file_stat;
@@ -90,8 +79,44 @@ void build_http_response(const char *file_name,
     while ((bytes_read = read(file_fd, response + *response_len, BUFFER_SIZE - *response_len)) > 0) {
         *response_len += bytes_read;
     }
-    free(header);
     close(file_fd);
+    return 1;
+}
+
+void build_http_response(const char *file_name,
+    const char *file_ext, char *response, size_t *response_len) {
+    const char *mime_type = get_mime_type(file_ext);
+    char *header = (char *)malloc(BUFFER_SIZE * sizeof(char));
+    snprintf(header, BUFFER_SIZE,
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: %s\r\n"
+             "\r\n",
+             mime_type);
+
+    /* files first */
+    int file_read_result = read_file_contents(file_name, response, response_len, header);
+    if (file_read_result > 0) {
+        free(header);
+        return;
+    }
+    /* dynamic routes second */
+
+    /* otherwise not found */
+    const char *not_found_file = "404.html";
+    const char *not_found_file_ext = "html";
+    const char *not_found_mime_type = "text/html";
+    snprintf(header, BUFFER_SIZE,
+             "HTTP/1.1 404 Not Found\r\n"
+             "Content-Type: %s\r\n"
+             "\r\n",
+             not_found_mime_type);
+    int not_found_file_read_result = read_file_contents(not_found_file, response, response_len, header);
+    if (not_found_file_read_result < 0) {
+        free(header);
+        perror("Error reading 404.html\n");
+        exit(EXIT_FAILURE);
+    }
+    free(header);
 }
 
 void *handle_client(void *arg) {
@@ -103,7 +128,12 @@ void *handle_client(void *arg) {
     if (bytes_received > 0) {
 
         HttpRequest *req = parse_request(buffer);
-        printf("%s: %s", get_method_str(req->method), req->url);
+
+        /* logging */
+        time_t rawtime = time(NULL);
+        struct tm *timeinfo;
+        timeinfo = localtime(&rawtime);
+        printf("%s %s: %s\n\n", asctime(timeinfo), get_method_str(req->method), req->url);
 
         if (req->method == GET) {
             char *file_name = req->url;
